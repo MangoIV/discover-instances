@@ -8,6 +8,9 @@
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TemplateHaskell #-}
 {-# LANGUAGE TypeApplications #-}
+{-# LANGUAGE MultiParamTypeClasses #-}
+{-# LANGUAGE FlexibleInstances #-}
+{-# LANGUAGE UndecidableSuperClasses #-}
 
 -- | Generally speaking, this module is only useful to discover instances
 -- of unary type classes where the instance is unconstrained.
@@ -28,6 +31,7 @@ module DiscoverInstances
     (
     -- * The main interface
       discoverInstances
+    , discoverInstances
     -- * Using the results of 'discoverInstances'
     -- $using
     , withInstances
@@ -87,6 +91,21 @@ discoverInstances = liftSplice $ do
     instanceDecs <- reifyInstances (mkName className) [VarT (mkName "a")]
 
     dicts <- fmap listTE $ traverse decToDict instanceDecs
+
+    examineSplice [|| concat $$(liftSplice $ pure dicts) ||]
+
+-- | helper constraint synonym which holds if both the constrains witnessed hold
+class (c1 k, c2 k) => Both c1 c2 k
+instance (c1 k, c2 k) => Both c1 c2 k
+
+discoverInstances' :: forall (c :: _ -> Constraint) . (Typeable c) => SpliceQ [SomeDict (Both Typeable c)]
+discoverInstances' = liftSplice $ do
+    let
+        className =
+            show (typeRep (Proxy @c))
+    instanceDecs <- reifyInstances (mkName className) [VarT (mkName "a")]
+
+    dicts <- fmap listTE $ traverse decToDictTypeable instanceDecs
 
     examineSplice [|| concat $$(liftSplice $ pure dicts) ||]
 
@@ -233,6 +252,38 @@ decToDict = \case
                         x
                     proxy =
                         [| Proxy :: Proxy $(pure t) |]
+                unsafeTExpCoerce [| [ SomeDictOf $proxy ] |]
+            _ -> do
+                -- reportWarning $
+                --     "I haven't figured out how to put constrained instances on here, so I'm skipping the type: "
+                --     <> show typ
+                --     <> ", context: "
+                --     <> show cxt
+                examineSplice [|| [] ||]
+
+    _ -> do
+        reportWarning $
+            "discoverInstances called on 'reifyInstances' somehow returned something that wasn't a type class instance."
+        examineSplice [|| [] ||]
+
+decToDictTypeable :: forall k (c :: k -> Constraint). InstanceDec -> Q (TExp [SomeDict (Both Typeable c)])
+decToDictTypeable = \case
+    InstanceD _moverlap cxt typ _decs ->
+        case cxt of
+            [] -> do
+                let
+                    t =
+                        case typ of
+                            AppT _ t' ->
+                               stripSig t'
+                            _ ->
+                                t
+                    stripSig (SigT a _) =
+                        a
+                    stripSig x =
+                        x
+                    proxy =
+                        [| Proxy :: Proxy (Both Typeable $(pure t)) |]
                 unsafeTExpCoerce [| [ SomeDictOf $proxy ] |]
             _ -> do
                 -- reportWarning $
